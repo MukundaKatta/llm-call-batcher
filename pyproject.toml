@@ -16,5 +16,12 @@ classifiers = [
     "Intended Audience :: Developers",
 ]
 
+[project.urls]
+Homepage = "https://github.com/MukundaKatta/llm-call-batcher"
+Repository = "https://github.com/MukundaKatta/llm-call-batcher"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+llm_call_batcher = ["py.typed"]
