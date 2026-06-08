@@ -1,6 +1,7 @@
 """
 llm-call-batcher: Accumulate individual LLM requests into a batch, then flush on size or timeout.
 """
+
 from __future__ import annotations
 
 import threading
@@ -101,14 +102,19 @@ class CallBatcher:
 
         with self._lock:
             for req_id, result in result_map.items():
-                self._results[req_id] = result
+                # Only retain results that a blocking submit() is waiting for.
+                # submit_nowait() and timed-out submit() calls register no live
+                # future, so storing their results would leak memory unbounded.
                 evt = self._futures.get(req_id)
-                if evt:
+                if evt is not None:
+                    self._results[req_id] = result
                     evt.set()
 
     # -- public API -------------------------------------------------------
 
-    def submit(self, request_id: str, payload: Any, timeout: Optional[float] = None) -> BatchResult:
+    def submit(
+        self, request_id: str, payload: Any, timeout: Optional[float] = None
+    ) -> BatchResult:
         """Add a request and block until the batch is flushed."""
         evt = threading.Event()
         req = BatchRequest(request_id=request_id, payload=payload)
@@ -128,7 +134,9 @@ class CallBatcher:
             self._futures.pop(request_id, None)
 
         if result is None:
-            return BatchResult(request_id, error=TimeoutError("Batch did not flush in time"))
+            return BatchResult(
+                request_id, error=TimeoutError("Batch did not flush in time")
+            )
         return result
 
     def submit_nowait(self, request_id: str, payload: Any) -> None:

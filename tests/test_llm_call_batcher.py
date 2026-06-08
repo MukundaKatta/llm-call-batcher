@@ -1,6 +1,5 @@
 import threading
 import time
-import pytest
 from llm_call_batcher import CallBatcher, BatchRequest, BatchResult
 
 
@@ -9,7 +8,9 @@ def simple_batch_fn(requests):
 
 
 def make_batcher(**kwargs):
-    return CallBatcher(batch_fn=simple_batch_fn, max_size=5, flush_interval=0.1, **kwargs)
+    return CallBatcher(
+        batch_fn=simple_batch_fn, max_size=5, flush_interval=0.1, **kwargs
+    )
 
 
 def test_basic_submit():
@@ -42,7 +43,9 @@ def test_flush_on_max_size():
     try:
         results = []
         for i in range(3):
-            t = threading.Thread(target=lambda i=i: results.append(batcher.submit(f"r{i}", payload=i)))
+            t = threading.Thread(
+                target=lambda i=i: results.append(batcher.submit(f"r{i}", payload=i))
+            )
             t.start()
         time.sleep(0.3)
         assert 3 in flushed or len(results) == 3
@@ -152,15 +155,47 @@ def test_concurrent_submits():
     try:
         threads = []
         for i in range(5):
+
             def submit(i=i):
                 r = batcher.submit(f"c{i}", payload=i)
                 with lock:
                     results[r.request_id] = r.result
+
             t = threading.Thread(target=submit)
             threads.append(t)
             t.start()
         for t in threads:
             t.join(timeout=2.0)
         assert len(results) == 5
+    finally:
+        batcher.shutdown()
+
+
+def test_submit_nowait_does_not_leak_results():
+    # Fire-and-forget requests have no waiter to pop their result, so the
+    # batcher must not retain them after flushing.
+    batcher = CallBatcher(batch_fn=simple_batch_fn, max_size=1000, flush_interval=100.0)
+    try:
+        for i in range(50):
+            batcher.submit_nowait(f"n{i}", payload=i)
+        batcher.flush()
+        assert batcher.pending_count == 0
+        assert len(batcher._results) == 0
+    finally:
+        batcher.shutdown()
+
+
+def test_submit_timeout_does_not_leak_results():
+    # A submit() that times out must return a TimeoutError and must not leave a
+    # stale result/future behind even when the batch flushes afterwards.
+    batcher = CallBatcher(batch_fn=simple_batch_fn, max_size=1000, flush_interval=5.0)
+    try:
+        result = batcher.submit("late", payload=1, timeout=0.05)
+        assert not result.ok
+        assert isinstance(result.error, TimeoutError)
+        batcher.flush()  # would have stored a stale result before the fix
+        time.sleep(0.05)
+        assert len(batcher._results) == 0
+        assert len(batcher._futures) == 0
     finally:
         batcher.shutdown()
